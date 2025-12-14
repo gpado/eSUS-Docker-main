@@ -1,17 +1,165 @@
 # eSUS-Docker
-Implantando o e-SUS PEC em container Docker
 
-Gerando as imagens
---
-Primeiro vamos criar a imagem do banco de dados que vai ser baseada no PostgreSQL versão 9.6.13-apine, para isso faça o build da imagem usando o Dockerfile que está na pasta database, entre na pasta e utilize o comando ```sudo docker build -t esus_database:1.0 .```.<br/>
-Agora vamos criar a imagem do webserver, primeiro copie o link de download da versão do e-SUS PEC direto do site https://sisaps.saude.gov.br/esus/ nesse exemplo utilizerei o link da versão 5.3.21 https://arquivos.esusab.ufsc.br/PEC/1af9b7ee9c3886bd/5.3.21/eSUS-AB-PEC-5.3.21-Linux64.jar.
-Vamos agora fazer o build da imagem entrando na pasta webserver, devemos passar os parâmetros necessários  (```URL_DOWNLOAD_ESUS```, ```APP_DB_URL```, ```APP_DB_USER``` e ```APP_DB_PASSWORD```) para o comando de build.<br/>Exemplo : ```sudo docker build --build-arg=URL_DOWNLOAD_ESUS=https://arquivos.esusab.ufsc.br/PEC/1af9b7ee9c3886bd/5.3.21/eSUS-AB-PEC-5.3.21-Linux64.jar --build-arg=APP_DB_URL=jdbc:postgresql://127.0.0.1:5433/esus --build-arg=APP_DB_USER=postgres --build-arg=APP_DB_PASSWORD=esus -t esus_webserver:1.0 .```<br/>
+Implantação do **e-SUS APS PEC** em containers Docker.
 
-Criando as imagens e executando os containers com Docker compose
---
-No diretório raiz do projeto execute o comando ``sudo sh build-service.sh`` esse shell script vai criar as imagens e os containers de forma automática utilizando internamente o arquivo ``docker-compose.yml``.<br/>
-Esse script shell é necessário porque ao fazer o build da imagem do webserver é necessário ter um banco de dados em execução, primeiro o script cria a imagem e o container do banco de dados e aguarda eles estarem disponíveis e em seguinda cria a imagem e o container do webserver.
+> Importante: este projeto **faz o build do `webserver` conectando no Postgres durante o build** (o instalador do e-SUS roda dentro do `Dockerfile`).
+> Por isso, em geral, **não dá para usar “Stack + build” direto no Portainer** sem preparar o banco antes.
 
-Observação
---
-Os nomes das imagens, containers e rede são de sua escolha assim como a bindagem da porta do webserver.
+---
+
+## Requisitos
+
+- Docker Engine + Docker Compose (plugin)
+- Acesso à internet para baixar o instalador (`.jar`) do e-SUS
+
+### Portas
+
+- **Web (PEC)**: `8080` (mapeada como `8080:8080`)
+- **PostgreSQL**: `5432` (recomendado **não expor na internet**)
+
+---
+
+## Subindo localmente (Linux)
+
+No diretório raiz do projeto:
+
+```bash
+docker compose up -d --build
+docker compose ps
+```
+
+Se preferir usar o script (Linux):
+
+```bash
+sudo sh build-service.sh
+```
+
+O script existe porque o build do `webserver` precisa de um banco já rodando e saudável.
+
+---
+
+## Subindo na VPS com Portainer (Hostinger)
+
+### Visão geral (recomendado)
+
+1) Subir o Postgres na VPS
+2) Buildar a imagem do `webserver` na VPS **com a rede do compose**
+3) No Portainer, criar uma Stack **sem `build:`** (somente `image:`)
+
+### 1) Coloque o projeto na VPS
+
+Exemplos:
+
+```bash
+# opção A: via git
+git clone <seu-repositorio> /opt/eSUS-Docker
+cd /opt/eSUS-Docker
+
+# opção B: via upload (SFTP/WinSCP)
+cd /opt/eSUS-Docker
+```
+
+### 2) Suba o banco primeiro
+
+```bash
+docker compose up -d --build database
+docker compose ps
+```
+
+### 3) Build do `webserver` na VPS (apontando para o serviço `database`)
+
+Esse comando permite que o `docker build` enxergue o Postgres pela rede `esus_network`.
+
+```bash
+docker build --network esus_network -t esus_webserver:5.4.22 \
+  --build-arg APP_DB_URL="jdbc:postgresql://database:5432/esus" \
+  --build-arg APP_DB_USER="postgres" \
+  --build-arg APP_DB_PASSWORD="esus" \
+  --build-arg URL_DOWNLOAD_ESUS="https://arquivos.esusaps.ufsc.br/PEC/e05d0f216b67efe0/5.4.22/eSUS-AB-PEC-5.4.22-Linux64.jar" \
+  ./webserver
+```
+
+(Opcional) Build da imagem do banco:
+
+```bash
+docker build -t esus_database:1.0.0 ./database
+```
+
+### 4) Portainer: Stack (sem `build:`) + volume do Postgres
+
+No Portainer: **Stacks → Add stack → Web editor** e cole:
+
+```yaml
+services:
+  database:
+    container_name: esus_database
+    image: esus_database:1.0.0
+    environment:
+      POSTGRES_DB: esus
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: esus
+    volumes:
+      - esus_pgdata:/var/lib/postgresql/data
+    networks:
+      - esus_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+      timeout: 10s
+
+  webserver:
+    container_name: esus_webserver
+    image: esus_webserver:5.4.22
+    ports:
+      - '8080:8080'
+    networks:
+      - esus_network
+    depends_on:
+      database:
+        condition: service_healthy
+
+networks:
+  esus_network:
+    driver: bridge
+
+volumes:
+  esus_pgdata:
+```
+
+Clique em **Deploy the stack**.
+
+### 5) Firewall / segurança
+
+- Libere **apenas** a porta `8080` (ou coloque atrás de Nginx/Traefik com HTTPS).
+- **Não publique** `5432` para a internet. Deixe o Postgres só na rede Docker.
+
+---
+
+## Customização
+
+- **Versão do e-SUS**: altere o `URL_DOWNLOAD_ESUS` (link do `.jar`) no `docker-compose.yml` ou no comando de `docker build`.
+- **Fuso horário**: o `webserver/Dockerfile` define `TZ=Etc/GMT+4`. Ajuste para sua região.
+
+---
+
+## Troubleshooting
+
+- **Build do webserver falha dizendo que não conecta no banco**:
+  - na VPS, suba o serviço `database` primeiro e faça o build com `--network esus_network`.
+- **Portainer Stack não builda**:
+  - use Stack sem `build:` (só `image:`) e faça o build das imagens na VPS antes.
+- **Ver logs**:
+
+```bash
+docker compose logs -f database
+docker compose logs -f webserver
+```
+
+---
+
+## Observações
+
+- Nomes de imagens/containers/rede e portas podem ser alterados conforme sua necessidade.
+- O script `build-service.sh` foi feito para ambiente Linux (bash). Em Windows, use os comandos do Docker diretamente.
