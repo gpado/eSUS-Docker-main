@@ -1,4 +1,4 @@
-FROM openjdk:17-jdk-bullseye
+FROM eclipse-temurin:17-jdk
 #argumentos para build
 #Link para download do instalador versão Linux.
 ARG URL_DOWNLOAD_ESUS="https://arquivos.esusaps.ufsc.br/PEC/e05d0f216b67efe0/5.4.22/eSUS-AB-PEC-5.4.22-Linux64.jar"

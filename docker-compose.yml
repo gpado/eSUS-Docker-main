@@ -3,12 +3,16 @@ services:
     container_name: esus_database
     image: esus_database:1.0.0
     build: database
-    ports:
-      - '5432:5432'
+    environment:
+      POSTGRES_DB: esus
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: esus
+    volumes:
+      - esus_pgdata:/var/lib/postgresql/data
     networks:
       - esus_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
       retries: 5
       start_period: 30s
@@ -39,3 +43,6 @@ services:
 networks:
   esus_network:
     driver: bridge
+
+volumes:
+  esus_pgdata:
