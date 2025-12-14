@@ -27,6 +27,10 @@ services:
         - APP_DB_URL
         - APP_DB_USER=postgres
         - APP_DB_PASSWORD=esus
+    environment:
+      APP_DB_URL: ${APP_DB_URL}
+      APP_DB_USER: postgres
+      APP_DB_PASSWORD: esus
     ports:
       - '8080:8080'
     networks:

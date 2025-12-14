@@ -9,15 +9,6 @@ ARG APP_DB_PASSWORD="esus"
 
 RUN echo " Argumentos da build ->  ${APP_DB_URL} - ${APP_DB_USER} - ${APP_DB_PASSWORD}"
 
-#Atualiza a sources.list do Debian para poder instalar as fonts do windows.
-RUN cat <<EOF > /etc/apt/sources.list
-deb http://deb.debian.org/debian bullseye main contrib non-free
-deb-src http://deb.debian.org/debian bullseye main contrib non-free
-deb http://deb.debian.org/debian-security/ bullseye-security main contrib non-free
-deb-src http://deb.debian.org/debian-security/ bullseye-security main contrib non-free
-deb http://deb.debian.org/debian bullseye-updates main contrib non-free
-deb-src http://deb.debian.org/debian bullseye-updates main contrib non-free
-EOF
 RUN apt update
 RUN apt-get install -y ttf-mscorefonts-installer
 #Instala o init e o file porque o instalador do ESUS executa esses comandos.
@@ -40,8 +31,22 @@ RUN wget -O eSUS-AB-PEC.jar ${URL_DOWNLOAD_ESUS} --no-check-certificate
 RUN echo "s" | java -jar eSUS-AB-PEC.jar -console -url=${APP_DB_URL} -username=${APP_DB_USER} -password=${APP_DB_PASSWORD}
 #Extrai o migrador do banco de dados para ser executado na inicialização.
 RUN jar xf eSUS-AB-PEC.jar
-RUN cp container/database/migrador.jar /opt/e-SUS
-#Limpa os aquivos baixados e extraídos.
-RUN rm -r /home/downloads/*
+
+# Copia os arquivos extraídos do JAR para o local esperado pelo startup.sh
+RUN mkdir -p /opt/e-SUS \
+ && cp -r container/webserver /opt/e-SUS/webserver \
+ && cp -r container/database /opt/e-SUS/database \
+ && cp container/database/migrador.jar /opt/e-SUS/migrador.jar
+
+# Garante que exista o arquivo esperado pelo startup.sh
+RUN mkdir -p /opt/e-SUS/webserver/config \
+ && touch /opt/e-SUS/webserver/config/application.properties
+
+# Alguns scripts do e-SUS esperam java nesse caminho
+RUN mkdir -p /opt/e-SUS/jre/current/bin \
+ && ln -sf "$(command -v java)" /opt/e-SUS/jre/current/bin/java
+
+# Limpa downloads
+RUN rm -rf /home/downloads/*
 EXPOSE 8080
 ENTRYPOINT ["/opt/startup.sh"]
