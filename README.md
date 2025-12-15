@@ -3,7 +3,7 @@
 Implantação do **e-SUS APS PEC** em containers Docker.
 
 > Importante: este projeto **faz o build do `webserver` conectando no Postgres durante o build** (o instalador do e-SUS roda dentro do `Dockerfile`).
-> Por isso, em geral, **não dá para usar “Stack + build” direto no Portainer** sem preparar o banco antes.
+> Por isso, é necessário subir o banco primeiro antes de fazer o build do webserver.
 
 ---
 
@@ -38,24 +38,12 @@ O script existe porque o build do `webserver` precisa de um banco já rodando e 
 
 ---
 
-## Subindo na VPS com Portainer (Hostinger)
-
-### Visão geral (recomendado)
-
-1) Subir o Postgres na VPS
-2) Buildar a imagem do `webserver` na VPS **com a rede do compose**
-3) No Portainer, criar uma Stack **sem `build:`** (somente `image:`)
+## Subindo na VPS
 
 ### 1) Coloque o projeto na VPS
 
-Exemplos:
-
 ```bash
-# opção A: via git
 git clone <seu-repositorio> /opt/eSUS-Docker
-cd /opt/eSUS-Docker
-
-# opção B: via upload (SFTP/WinSCP)
 cd /opt/eSUS-Docker
 ```
 
@@ -66,12 +54,99 @@ docker compose up -d --build database
 docker compose ps
 ```
 
-### 3) Build do `webserver` na VPS (apontando para o serviço `database`)
+**Aguarde o banco ficar healthy.**
 
-Esse comando permite que o `docker build` enxergue o Postgres pela rede `esus_network`.
+### 3) Defina a variável `APP_DB_URL`
+
+O `docker-compose.yml` usa `${APP_DB_URL}` no build/execução. Você pode definir de duas formas:
+
+**Opção A: Criar arquivo `.env` (recomendado)**
 
 ```bash
-docker build --network esus_network -t esus_webserver:5.4.22 \
+cd /opt/eSUS-Docker
+
+cat > .env <<'EOF'
+APP_DB_URL=jdbc:postgresql://database:5432/esus
+EOF
+
+cat .env
+```
+
+**Opção B: Exportar como variável de ambiente**
+
+```bash
+export APP_DB_URL="jdbc:postgresql://database:5432/esus"
+```
+
+### 4) Crie o `application.properties` (config do banco)
+
+O `startup.sh` pode ler as configurações do arquivo `application.properties`. Crie no host e monte no container:
+
+```bash
+cd /opt/eSUS-Docker
+mkdir -p config
+
+cat > config/application.properties <<'EOF'
+spring.datasource.url=jdbc:postgresql://database:5432/esus
+spring.datasource.username=postgres
+spring.datasource.password=esus
+spring.datasource.driverClassName=org.postgresql.Driver
+EOF
+
+cat config/application.properties
+```
+
+**Importante**: use `driverClassName` (sem hífen). `driver-class-name` pode causar erro no export do shell (`bad variable name`) dependendo do script.
+
+### 5) Garanta que o `docker-compose.yml` passa env + monta o properties
+
+No serviço `webserver`, garanta que existam:
+
+**environment:**
+```yaml
+environment:
+  APP_DB_URL: ${APP_DB_URL}
+  APP_DB_USER: postgres
+  APP_DB_PASSWORD: esus
+```
+
+**volumes:**
+```yaml
+volumes:
+  - ./config/application.properties:/opt/e-SUS/webserver/config/application.properties
+```
+
+**Recomendação**: não expor `5432` publicamente. Deixe apenas interno (sem `ports:` no `database`).
+
+### 6) Build do `webserver` na VPS (BuildKit/buildx)
+
+Em Docker moderno, o BuildKit pode não suportar `--network` com rede custom do compose no `docker build`.
+A abordagem mais estável é usar `buildx` com um builder preso na rede do compose.
+
+Descubra o nome da rede criada pelo compose (geralmente `<pasta>_esus_network`):
+
+```bash
+docker network ls | grep esus
+```
+
+Exemplo: `esus-docker_esus_network`
+
+Crie/ative um builder buildx usando essa rede:
+
+```bash
+docker buildx create --use --name esusbuilder \
+  --driver docker-container \
+  --driver-opt "network=esus-docker_esus_network"
+
+docker buildx inspect --bootstrap
+```
+
+Build da imagem do webserver (com `--load` para ficar disponível localmente):
+
+```bash
+cd /opt/eSUS-Docker
+
+docker buildx build --no-cache --load -t esus_webserver:5.4.22 \
   --build-arg APP_DB_URL="jdbc:postgresql://database:5432/esus" \
   --build-arg APP_DB_USER="postgres" \
   --build-arg APP_DB_PASSWORD="esus" \
@@ -79,78 +154,78 @@ docker build --network esus_network -t esus_webserver:5.4.22 \
   ./webserver
 ```
 
-(Opcional) Build da imagem do banco:
+### 7) Suba o webserver (sem build)
 
 ```bash
-docker build -t esus_database:1.0.0 ./database
+cd /opt/eSUS-Docker
+docker compose up -d --no-build --force-recreate webserver
+docker compose ps
 ```
 
-### 4) Portainer: Stack (sem `build:`) + volume do Postgres
+**Logs:**
 
-No Portainer: **Stacks → Add stack → Web editor** e cole:
-
-```yaml
-services:
-  database:
-    container_name: esus_database
-    image: esus_database:1.0.0
-    environment:
-      POSTGRES_DB: esus
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: esus
-    volumes:
-      - esus_pgdata:/var/lib/postgresql/data
-    networks:
-      - esus_network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      retries: 5
-      start_period: 30s
-      timeout: 10s
-
-  webserver:
-    container_name: esus_webserver
-    image: esus_webserver:5.4.22
-    ports:
-      - '8080:8080'
-    networks:
-      - esus_network
-    depends_on:
-      database:
-        condition: service_healthy
-
-networks:
-  esus_network:
-    driver: bridge
-
-volumes:
-  esus_pgdata:
+```bash
+docker compose logs -n 200 webserver
 ```
 
-Clique em **Deploy the stack**.
+**Teste da porta:**
 
-### 5) Firewall / segurança
+```bash
+ss -tulpn | grep 8080 || true
+```
 
-- Libere **apenas** a porta `8080` (ou coloque atrás de Nginx/Traefik com HTTPS).
-- **Não publique** `5432` para a internet. Deixe o Postgres só na rede Docker.
+**Acesso:**
+
+```
+http://IP_DA_VPS:8080
+```
 
 ---
 
 ## Customização
 
-- **Versão do e-SUS**: altere o `URL_DOWNLOAD_ESUS` (link do `.jar`) no `docker-compose.yml` ou no comando de `docker build`.
+- **Versão do e-SUS**: altere o `URL_DOWNLOAD_ESUS` (link do `.jar`) no compose ou no comando de build.
 - **Fuso horário**: o `webserver/Dockerfile` define `TZ=Etc/GMT+4`. Ajuste para sua região.
 
 ---
 
 ## Troubleshooting
 
-- **Build do webserver falha dizendo que não conecta no banco**:
-  - na VPS, suba o serviço `database` primeiro e faça o build com `--network esus_network`.
-- **Portainer Stack não builda**:
-  - use Stack sem `build:` (só `image:`) e faça o build das imagens na VPS antes.
-- **Ver logs**:
+### 1) BuildKit não suporta rede custom no `docker build --network ...`
+
+**Sintoma**: erro de network mode "not supported by buildkit"
+
+**Solução**: usar `docker buildx create ... --driver-opt network=<rede>` e `docker buildx build --load ...`.
+
+### 2) Tag `openjdk:17-jdk-bullseye` não encontrada
+
+**Sintoma**: `openjdk:17-jdk-bullseye: not found`
+
+**Solução**: usar imagem base `eclipse-temurin:17-jdk`.
+
+### 3) `apt update` falha com GPG / NO_PUBKEY (Debian bullseye)
+
+**Sintoma**: erros GPG ao atualizar pacotes no build
+
+**Causa comum**: sobrescrever `sources.list` do container com Debian em uma base Ubuntu
+
+**Solução**: manter base e repos consistentes (não misturar).
+
+### 4) Webserver sobe, mas DB URL/Username/Password ficam vazios
+
+**Sintoma**: logs mostram `Database URL = vazio` e erro de conexão
+
+**Solução**: garantir:
+- `env APP_DB_URL/USER/PASSWORD` no `docker-compose.yml`
+- volume do `application.properties` montado no caminho esperado.
+
+### 5) `export: spring_datasource_driver-class-name: bad variable name`
+
+**Sintoma**: erro de variável inválida
+
+**Solução**: usar `spring.datasource.driverClassName` (sem hífen) no `application.properties`.
+
+### Logs úteis
 
 ```bash
 docker compose logs -f database
@@ -159,7 +234,14 @@ docker compose logs -f webserver
 
 ---
 
+## Segurança
+
+- Exponha publicamente apenas `8080` (ou prefira proxy com HTTPS).
+- Não publique `5432` na internet. Deixe o Postgres apenas na rede Docker.
+
+---
+
 ## Observações
 
-- Nomes de imagens/containers/rede e portas podem ser alterados conforme sua necessidade.
-- O script `build-service.sh` foi feito para ambiente Linux (bash). Em Windows, use os comandos do Docker diretamente.
+- Nomes de imagens/containers/rede e portas podem ser alterados conforme necessidade.
+- O `build-service.sh` foi feito para Linux (bash). Em Windows, use os comandos do Docker diretamente.
