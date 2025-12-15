@@ -11,6 +11,20 @@ do
     export "${key}"="${value}"
 done < "$file"
 
+# Se as variáveis de runtime foram passadas via docker-compose, elas devem prevalecer
+# sobre o arquivo application.properties.
+if [ -n "${APP_DB_URL}" ]; then
+  export spring_datasource_url=${APP_DB_URL}
+fi
+if [ -n "${APP_DB_USER}" ]; then
+  export spring_datasource_username=${APP_DB_USER}
+fi
+if [ -n "${APP_DB_PASSWORD}" ]; then
+  export spring_datasource_password=${APP_DB_PASSWORD}
+fi
+
+export spring_datasource_driverClassName=org.postgresql.Driver
+
 echo "Database URL = " ${spring_datasource_url}
 echo "Username = " ${spring_datasource_username}
 echo "Password = " ${spring_datasource_password}

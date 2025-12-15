@@ -33,6 +33,8 @@ services:
       APP_DB_PASSWORD: esus
     ports:
       - '8080:8080'
+    volumes:
+      - ./config/application.properties:/opt/e-SUS/webserver/config/application.properties
     networks:
       - esus_network
     depends_on:
